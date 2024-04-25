@@ -1,11 +1,16 @@
 //go:build ignore
 
+#include <linux/filter.h>
 #include <linux/bpf.h>
 #include <linux/ip.h>
 #include <linux/if_ether.h>
 #include <linux/tcp.h>
 #include <bpf/bpf_helpers.h>
 #include <netinet/in.h>
+
+#ifndef HAVE_LIBBPF_BPF_PROGRAM__TYPE
+static long (*bpf_xdp_load_bytes)(struct xdp_md *xdp_md, __u32 offset, void *buf, __u32 len) = (void *) 189;
+#endif
 
 #define ETHER_HDR_LEN sizeof(struct ethhdr)
 #define IP_HDR_LEN sizeof(struct iphdr)
@@ -36,19 +41,9 @@ struct {
     __type(key, __u32);
     __type(value, __u64);
     __uint(max_entries, 1);
-} pkt_count SEC(".maps"); 
+} pkt_count SEC(".maps");
 
-// Compare two strings
-static inline int bpf_strcmp(const char *str1, const char *str2, int len) {
-    for (int i = 0; i < len; i++) {
-        if (str1[i] != str2[i]) {
-            return 1; // Strings are different
-        }
-    }
-    return 0; // Strings are equal
-}
-
-SEC("xdp") 
+SEC("xdp")
 int filter_sni(struct xdp_md *ctx) {
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
@@ -194,31 +189,18 @@ int filter_sni(struct xdp_md *ctx) {
             offset += sizeof(struct sni_extension);
 
             int server_name_len = ntohs(sni_ext->len);
+            if (server_name_len < 0 || server_name_len > 255)
+                return XDP_PASS;
             bpf_printk("server_name_len: %d\n", server_name_len);
 
-            __u32 key    = 0;
-            __u64 *count = bpf_map_lookup_elem(&pkt_count, &key);
-            if (count) {
-                __sync_fetch_and_add(count, 1);
-            }
-
             struct server_name sn;
-            for (int i = 0; i < server_name_len; i++) {
-                if (data + offset + 1 > data_end) {
-                    return XDP_PASS;
-                }
-                if (i > sizeof(sn.server_name) - 1) {
-                    return XDP_PASS;
-                }
-                sn.server_name[i] = (*(char *)(data + offset));
-                offset += 1;
-            }
-            sn.server_name[server_name_len] = 0;
-            //struct server_name sn = {"a"};
-            //bpf_xdp_load_bytes(data, offset, &sn.server_name, server_name_len);
-            bpf_printk("server_name: %s\n", ((char *)(data + offset)));
-            //char domain[] = "alerts.ynet.co.il";
-//            if (server_name_len == sizeof(domain) && bpf_strcmp(sni, domain, sni_len) == 0) {
+            int err = bpf_xdp_load_bytes(ctx, offset, &sn.server_name, 1 + server_name_len);
+            if (err)
+                return err;
+            bpf_printk("server_name: %s\n", sn.server_name);
+
+//            char domain[] = "alerts.ynet.co.il";
+//            if (server_name_len == sizeof(domain) && __builtin_memcmp(sn.server_name, domain, server_name_len) == 0) {
 //                return XDP_DROP;
 //            }
 
@@ -237,4 +219,4 @@ int filter_sni(struct xdp_md *ctx) {
     return XDP_PASS;
 }
 
-char __license[] SEC("license") = "Dual MIT/GPL";
+char __license[] SEC("license") = "GPL";
