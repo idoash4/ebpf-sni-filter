@@ -141,8 +141,6 @@ int filter_sni(struct xdp_md *ctx) {
     if (tls_session_len < 0 || tls_session_len > 255)
         return XDP_PASS;
 
-    bpf_printk("tls_session_len: %d\n", tls_session_len);
-
     // Calculate the offset to the TLS chipper suites length
     int tls_cipher_suites_len_offset = tls_session_len_offset + tls_session_len + 1;
 
@@ -153,8 +151,6 @@ int filter_sni(struct xdp_md *ctx) {
     // Calculate the length of the cipher suites. The length is a 2-byte field.
     int tls_cipher_suites_len = (*(uint8_t *)(data + tls_cipher_suites_len_offset + 1)) +
             ((*(uint8_t *)(data + tls_cipher_suites_len_offset)) << 8);
-
-    bpf_printk("tls_cipher_suites_len: %d\n", tls_cipher_suites_len);
 
     if (tls_cipher_suites_len < 0 || tls_cipher_suites_len > 65535/2) // /2
         return XDP_PASS;
@@ -171,8 +167,6 @@ int filter_sni(struct xdp_md *ctx) {
     if (tls_compress_methods_len < 0 || tls_compress_methods_len > 255)
         return XDP_PASS;
 
-    bpf_printk("tls_compress_methods_len: %d\n", tls_compress_methods_len);
-
     int tls_extensions_len_offset = tls_compress_methods_len_offset + tls_compress_methods_len + 1;
 
     // Bounds check for TLS extensions length
@@ -185,12 +179,7 @@ int filter_sni(struct xdp_md *ctx) {
     if (tls_extensions_len < 0 || tls_extensions_len > 65535)
         return XDP_PASS;
 
-    bpf_printk("tls_extensions_len: %d\n", tls_extensions_len);
-
     int offset = tls_extensions_len_offset + 2;
-
-    bpf_printk("offset: %d\n", offset);
-    bpf_printk("limit: %d\n", tls_extensions_len_offset + tls_extensions_len + 2);
 
     for (int i = 0; i < TLS_MAX_EXTENSIONS; i++) {
         struct extension *ext;
@@ -205,9 +194,6 @@ int filter_sni(struct xdp_md *ctx) {
         offset += sizeof(struct extension);
         __u16 extension_len = ntohs(ext->len);
 
-        bpf_printk("extension_type: %d\n", ntohs(ext->type));
-        bpf_printk("extension_len: %d\n", extension_len);
-
         if (ntohs(ext->type) == SNI_EXTENSION) {
             if (data + offset + sizeof(struct sni_extension) > data_end)
                 return XDP_PASS;
@@ -219,14 +205,12 @@ int filter_sni(struct xdp_md *ctx) {
             __u8 server_name_len = ntohs(sni_ext->len);
             if (server_name_len <= 0 || server_name_len > 255)
                 return XDP_PASS;
-            bpf_printk("server_name_len: %d\n", server_name_len);
 
             struct server_name sn;
             int err = bpf_core_read(sn.server_name, server_name_len, data + offset);
             if (err)
                 return err;
             sn.server_name[server_name_len] = '\0';
-            bpf_printk("server_name: %s\n", sn.server_name);
 
             struct callback_sni cbs = {
                 .server_name = &sn,
@@ -234,7 +218,6 @@ int filter_sni(struct xdp_md *ctx) {
                 .result = XDP_PASS,
             };
             bpf_for_each_map_elem(&domain_names, check_filter, &cbs, 0);
-            bpf_printk("found: %d\n", cbs.result);
 
             if (cbs.result == XDP_DROP) {
                 __u32 key = 0;
